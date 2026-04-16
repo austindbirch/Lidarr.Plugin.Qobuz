@@ -5,6 +5,7 @@ using System.Net;
 using System.Text;
 using NLog;
 using NzbDrone.Core.Indexers.Qobuz;
+using QobuzApiSharp.Exceptions;
 using QobuzApiSharp.Models.User;
 using QobuzApiSharp.Service;
 
@@ -46,12 +47,18 @@ public class QobuzAPI
 
         _lastPassword = settings.MD5Password;
 
+        logger.Debug($"Qobuz signing in with App ID: {_client.AppId ?? "(auto-detected)"}");
+
         try
         {
             if (ep)
                 LoginWithEmail(settings.Email, settings.MD5Password);
             else if (it)
                 LoginWithToken(settings.UserID, settings.UserAuthToken);
+        }
+        catch (ApiErrorResponseException ex)
+        {
+            logger.Error($"Qobuz login failed — Status: {ex.ResponseStatusCode} {ex.ResponseStatus}, Reason: {ex.ResponseReason}\n{ex}");
         }
         catch (Exception ex)
         {

@@ -50,6 +50,11 @@ namespace NzbDrone.Core.Indexers.Qobuz
                 QobuzAPI.Instance.PickSignInFromSettings(Settings, Logger);
             }
 
+            if (QobuzAPI.Instance.Login == null)
+            {
+                throw new Exception("Qobuz login failed, please check your credentials in the indexer settings.");
+            }
+
             for (var page = 0; page < MaxPages; page++)
             {
                 var data = new Dictionary<string, string>()
