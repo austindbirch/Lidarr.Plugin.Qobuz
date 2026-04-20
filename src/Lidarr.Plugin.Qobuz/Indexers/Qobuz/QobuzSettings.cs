@@ -15,16 +15,16 @@ namespace NzbDrone.Core.Indexers.Qobuz
     {
         private static readonly QobuzIndexerSettingsValidator Validator = new QobuzIndexerSettingsValidator();
 
-        [FieldDefinition(0, Label = "Qobuz Email", Type = FieldType.Textbox, HelpTextWarning = "If an email+password and an id+token are supplied at the same time, the email/password will be used. Only one form of authentication is needed.")]
+        [FieldDefinition(0, Label = "Qobuz Email", Type = FieldType.Textbox, HelpTextWarning = "Email/password login only supports search. For downloads, use User ID + Auth Token instead.")]
         public string Email { get; set; } = "";
 
-        [FieldDefinition(1, Label = "Qobuz Password (MD5)", Type = FieldType.Textbox)]
+        [FieldDefinition(1, Label = "Qobuz Password (MD5)", Type = FieldType.Textbox, HelpText = "Your Qobuz password hashed with MD5. Email/password mode does not support downloading — use User ID + Auth Token for full functionality.")]
         public string MD5Password { get; set; } = "";
 
-        [FieldDefinition(2, Label = "User ID", Type = FieldType.Textbox)]
+        [FieldDefinition(2, Label = "User ID", Type = FieldType.Textbox, HelpText = "Your Qobuz numeric user ID. Find it in browser DevTools at play.qobuz.com: open Network tab, look for any API response containing 'user' with an 'id' field.")]
         public string UserID { get; set; }
 
-        [FieldDefinition(3, Label = "User Auth Token", Type = FieldType.Textbox, HelpTextWarning = "If a token sign in is failing, try changing the App ID and Secret.", HelpLink = "https://telegra.ph/How-to-fix-403---Invalid-usernameemail-and-password-10-12")]
+        [FieldDefinition(3, Label = "User Auth Token", Type = FieldType.Textbox, HelpText = "Your Qobuz auth token. Get it from play.qobuz.com: open DevTools → Network tab → look for requests with an 'X-User-Auth-Token' header, or check Local Storage for 'user_auth_token'. This token enables both search and downloads.")]
         public string UserAuthToken { get; set; }
 
         [FieldDefinition(4, Label = "App ID", Type = FieldType.Textbox, Placeholder = "Optional")]
