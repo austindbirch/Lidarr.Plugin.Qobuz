@@ -69,7 +69,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
         public int FailedTracks { get; private set; }
         public int SkippedTracks { get; private set; }
 
-        private string[] _tracks;
+        private Track[] _tracks;
         private QobuzURL _qobuzUrl;
         private Album _qobuzAlbum;
 
@@ -77,37 +77,60 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
         {
             List<Task> tasks = new();
             using SemaphoreSlim semaphore = new(3, 3);
-            foreach (var trackId in _tracks)
+            foreach (var track in _tracks)
             {
                 tasks.Add(Task.Run(async () =>
                 {
                     await semaphore.WaitAsync(cancellation);
                     try
                     {
-                        await DoTrackDownload(trackId, settings, cancellation);
-                        DownloadedSize++;
+                        if (track.Streamable == false)
+                        {
+                            logger.Warn("Qobuz track {0} ({1}) is not streamable and will be skipped.", track.Id, track.Title);
+                            SkippedTracks++;
+                            return;
+                        }
+
+                        var effectiveBitrate = Bitrate;
+                        if ((Bitrate == AudioQuality.FLACHiRes24Bit192Khz || Bitrate == AudioQuality.FLACHiRes24Bit96kHz)
+                            && track.HiresStreamable == false)
+                        {
+                            logger.Info("Qobuz track {0} ({1}) is not Hi-Res streamable; falling back to FLAC lossless.", track.Id, track.Title);
+                            effectiveBitrate = AudioQuality.FLACLossless;
+                        }
+
+                        const int maxRetries = 3;
+                        for (int attempt = 1; attempt <= maxRetries; attempt++)
+                        {
+                            try
+                            {
+                                await DoTrackDownload(track.Id.ToString(), effectiveBitrate, settings, cancellation);
+                                DownloadedSize++;
+                                return;
+                            }
+                            catch (TaskCanceledException) when (cancellation.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch (ApiErrorResponseException ex) when (ex.ResponseStatusCode == "404")
+                            {
+                                logger.Warn("Qobuz track {0} ({1}) is not available individually (404) and will be skipped.", track.Id, track.Title);
+                                SkippedTracks++;
+                                return;
+                            }
+                            catch (Exception ex) when (attempt < maxRetries)
+                            {
+                                logger.Warn("Qobuz track {0} ({1}) failed (attempt {2}/{3}): {4}. Retrying...", track.Id, track.Title, attempt, maxRetries, ex.Message);
+                                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), cancellation);
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.Error("Qobuz track {0} ({1}) failed after {2} attempts: {3}", track.Id, track.Title, maxRetries, ex.Message);
+                                FailedTracks++;
+                            }
+                        }
                     }
                     catch (TaskCanceledException) when (cancellation.IsCancellationRequested) { }
-                    catch (TaskCanceledException ex)
-                    {
-                        logger.Warn("Qobuz track {0} timed out or was unexpectedly cancelled: {1}", trackId, ex.Message);
-                        FailedTracks++;
-                    }
-                    catch (ApiErrorResponseException ex) when (ex.ResponseStatusCode == "404")
-                    {
-                        logger.Warn("Qobuz track {0} is not available individually (404) and will be skipped.", trackId);
-                        SkippedTracks++;
-                    }
-                    catch (ApiErrorResponseException ex)
-                    {
-                        logger.Error("Error while downloading Qobuz track {0}: [{1}] {2} - {3}", trackId, ex.ResponseStatusCode, ex.ResponseStatus, ex.ResponseReason);
-                        FailedTracks++;
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.Error("Error while downloading Qobuz track {0}: {1}", trackId, ex.Message);
-                        FailedTracks++;
-                    }
                     finally
                     {
                         semaphore.Release();
@@ -116,7 +139,12 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
             }
 
             await Task.WhenAll(tasks);
-            if (FailedTracks > 0 || DownloadedSize + SkippedTracks < _tracks.Length)
+
+            bool incomplete = FailedTracks > 0
+                || DownloadedSize + SkippedTracks < _tracks.Length
+                || (settings.RequireCompleteAlbum && SkippedTracks > 0);
+
+            if (incomplete)
             {
                 logger.Warn("Qobuz download incomplete: {0}/{1} tracks downloaded, {2} failed, {3} skipped.", DownloadedSize, _tracks.Length, FailedTracks, SkippedTracks);
                 Status = DownloadItemStatus.Failed;
@@ -129,7 +157,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
             }
         }
 
-        private async Task DoTrackDownload(string track, QobuzSettings settings, CancellationToken cancellation = default)
+        private async Task DoTrackDownload(string track, AudioQuality bitrate, QobuzSettings settings, CancellationToken cancellation = default)
         {
             var page = QobuzAPI.Instance.Client.GetTrack(track, true);
             var songTitle = page.CompleteTitle;
@@ -137,7 +165,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
             var albumTitle = page.Album.CompleteTitle;
             var duration = page.Duration;
 
-            var ext = Bitrate == AudioQuality.MP3320 ? "mp3" : "flac";
+            var ext = bitrate == AudioQuality.MP3320 ? "mp3" : "flac";
             var outPath = Path.Combine(settings.DownloadPath, MetadataUtilities.GetFilledTemplate("%albumartist%/%album%/", ext, page, _qobuzAlbum), MetadataUtilities.GetFilledTemplate("%volume% - %track% - %title%.%ext%", ext, page, _qobuzAlbum));
             var outDir = Path.GetDirectoryName(outPath)!;
 
@@ -145,7 +173,14 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
             if (!Directory.Exists(outDir))
                 Directory.CreateDirectory(outDir);
 
-            await QobuzAPI.Instance.Client.WriteRawTrackToFile(track, outPath, Bitrate, cancellation);
+            await QobuzAPI.Instance.Client.WriteRawTrackToFile(track, outPath, bitrate, cancellation);
+
+            var fileSize = new FileInfo(outPath).Length;
+            if (fileSize < 50_000)
+            {
+                File.Delete(outPath);
+                throw new Exception($"Downloaded file for track {track} is too small ({fileSize} bytes); likely a failed or partial download.");
+            }
 
             var plainLyrics = string.Empty;
             string syncLyrics = null;
@@ -187,7 +222,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                 throw new InvalidOperationException();
 
             var album = QobuzAPI.Instance.Client.GetAlbum(_qobuzUrl.Id, true);
-            _tracks ??= album.Tracks.Items.Select(t => t.Id.ToString()).ToArray();
+            _tracks ??= album.Tracks.Items.ToArray();
 
             _qobuzAlbum = album;
 

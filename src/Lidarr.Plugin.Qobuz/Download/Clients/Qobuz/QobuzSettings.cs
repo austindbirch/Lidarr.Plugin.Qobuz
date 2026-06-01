@@ -27,6 +27,9 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
         [FieldDefinition(4, Label = "Use LRCLIB as Lyric Provider", HelpText = "Qobuz does not supply lyrics, this setting will enable grabbing lyric data from LRCLIB.", Type = FieldType.Checkbox)]
         public bool UseLRCLIB { get; set; } = false;
 
+        [FieldDefinition(5, Label = "Require Complete Album", Type = FieldType.Checkbox, HelpText = "If any track cannot be downloaded, mark the entire album as failed rather than completing with missing tracks.")]
+        public bool RequireCompleteAlbum { get; set; } = false;
+
         public NzbDroneValidationResult Validate()
         {
             return new NzbDroneValidationResult(Validator.Validate(this));
