@@ -91,44 +91,67 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                             return;
                         }
 
-                        var effectiveBitrate = Bitrate;
+                        // Pre-check: downgrade Hi-Res → lossless when track flags say Hi-Res isn't available
+                        var startingBitrate = Bitrate;
                         if ((Bitrate == AudioQuality.FLACHiRes24Bit192Khz || Bitrate == AudioQuality.FLACHiRes24Bit96kHz)
                             && track.HiresStreamable == false)
                         {
                             logger.Info("Qobuz track {0} ({1}) is not Hi-Res streamable; falling back to FLAC lossless.", track.Id, track.Title);
-                            effectiveBitrate = AudioQuality.FLACLossless;
+                            startingBitrate = AudioQuality.FLACLossless;
                         }
 
+                        // Quality upgrade chain: if a tier 404s, try the next one up before skipping
+                        var qualityChain = GetQualityUpgradeChain(startingBitrate, track);
+                        bool downloaded = false;
                         const int maxRetries = 3;
-                        for (int attempt = 1; attempt <= maxRetries; attempt++)
+
+                        foreach (var quality in qualityChain)
                         {
-                            try
+                            if (downloaded) break;
+                            if (quality != startingBitrate)
+                                logger.Info("Qobuz track {0} ({1}): upgrading quality to {2}.", track.Id, track.Title, quality);
+
+                            for (int attempt = 1; attempt <= maxRetries; attempt++)
                             {
-                                await DoTrackDownload(track.Id.ToString(), effectiveBitrate, settings, cancellation);
-                                DownloadedSize++;
-                                return;
-                            }
-                            catch (TaskCanceledException) when (cancellation.IsCancellationRequested)
-                            {
-                                throw;
-                            }
-                            catch (ApiErrorResponseException ex) when (ex.ResponseStatusCode == "404")
-                            {
-                                logger.Warn("Qobuz track {0} ({1}) is not available individually (404) and will be skipped.", track.Id, track.Title);
-                                SkippedTracks++;
-                                return;
-                            }
-                            catch (Exception ex) when (attempt < maxRetries)
-                            {
-                                logger.Warn("Qobuz track {0} ({1}) failed (attempt {2}/{3}): {4}. Retrying...", track.Id, track.Title, attempt, maxRetries, ex.Message);
-                                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), cancellation);
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.Error("Qobuz track {0} ({1}) failed after {2} attempts: {3}", track.Id, track.Title, maxRetries, ex.Message);
-                                FailedTracks++;
+                                try
+                                {
+                                    await DoTrackDownload(track.Id.ToString(), quality, settings, cancellation);
+                                    if (quality != Bitrate)
+                                        logger.Info("Qobuz track {0} ({1}): downloaded at quality {2} instead of requested {3}.", track.Id, track.Title, quality, Bitrate);
+                                    DownloadedSize++;
+                                    downloaded = true;
+                                    break;
+                                }
+                                catch (TaskCanceledException) when (cancellation.IsCancellationRequested)
+                                {
+                                    throw;
+                                }
+                                catch (ApiErrorResponseException ex) when (ex.ResponseStatusCode == "404")
+                                {
+                                    logger.Warn("Qobuz track {0} ({1}) returned 404 at quality {2}.", track.Id, track.Title, quality);
+                                    break; // try next quality tier
+                                }
+                                catch (Exception ex) when (attempt < maxRetries)
+                                {
+                                    logger.Warn("Qobuz track {0} ({1}) failed (attempt {2}/{3}): {4}. Retrying...", track.Id, track.Title, attempt, maxRetries, ex.Message);
+                                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), cancellation);
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.Error("Qobuz track {0} ({1}) failed after {2} attempts: {3}", track.Id, track.Title, maxRetries, ex.Message);
+                                    FailedTracks++;
+                                    downloaded = true; // stop trying further qualities
+                                    break;
+                                }
                             }
                         }
+
+                        if (!downloaded)
+                        {
+                            logger.Warn("Qobuz track {0} ({1}) is not available at any quality and will be skipped.", track.Id, track.Title);
+                            SkippedTracks++;
+                        }
+                        return;
                     }
                     catch (TaskCanceledException) when (cancellation.IsCancellationRequested) { }
                     finally
@@ -235,6 +258,42 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
         private static async Task CreateLrcFile(string lrcFilePath, string syncLyrics)
         {
             await File.WriteAllTextAsync(lrcFilePath, syncLyrics);
+        }
+
+        // Returns the quality tiers to attempt in order. After the flag-based pre-check has
+        // already downgraded Hi-Res → lossless where appropriate, this handles the remaining
+        // cases: MP3 or lossless that 404s but a higher tier IS available.
+        private static IEnumerable<AudioQuality> GetQualityUpgradeChain(AudioQuality startingQuality, Track track)
+        {
+            yield return startingQuality;
+
+            switch (startingQuality)
+            {
+                case AudioQuality.MP3320:
+                    yield return AudioQuality.FLACLossless;
+                    if (track.HiresStreamable == true)
+                    {
+                        yield return AudioQuality.FLACHiRes24Bit96kHz;
+                        yield return AudioQuality.FLACHiRes24Bit192Khz;
+                    }
+                    break;
+
+                case AudioQuality.FLACLossless:
+                    if (track.HiresStreamable == true)
+                    {
+                        yield return AudioQuality.FLACHiRes24Bit96kHz;
+                        yield return AudioQuality.FLACHiRes24Bit192Khz;
+                    }
+                    break;
+
+                case AudioQuality.FLACHiRes24Bit96kHz:
+                    yield return AudioQuality.FLACHiRes24Bit192Khz;
+                    break;
+
+                case AudioQuality.FLACHiRes24Bit192Khz:
+                    yield return AudioQuality.FLACHiRes24Bit96kHz;
+                    break;
+            }
         }
     }
 }
