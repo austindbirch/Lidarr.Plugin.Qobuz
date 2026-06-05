@@ -63,11 +63,17 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
         public DownloadItemStatus Status { get; set; }
 
         public float Progress { get => DownloadedSize / (float)Math.Max(TotalSize, 1); }
-        public long DownloadedSize { get; private set; }
+
+        // Backed by fields and mutated with Interlocked because up to 3 track tasks update these
+        // concurrently; a lost ++ here can wrongly mark an incomplete album as Completed.
+        private long _downloadedSize;
+        public long DownloadedSize => Interlocked.Read(ref _downloadedSize);
         public long TotalSize { get; private set; }
 
-        public int FailedTracks { get; private set; }
-        public int SkippedTracks { get; private set; }
+        private int _failedTracks;
+        public int FailedTracks => _failedTracks;
+        private int _skippedTracks;
+        public int SkippedTracks => _skippedTracks;
 
         private Track[] _tracks;
         private QobuzURL _qobuzUrl;
@@ -87,7 +93,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                         if (track.Streamable == false)
                         {
                             logger.Warn("Qobuz track {0} ({1}) is not streamable and will be skipped.", track.Id, track.Title);
-                            SkippedTracks++;
+                            Interlocked.Increment(ref _skippedTracks);
                             return;
                         }
 
@@ -118,7 +124,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                                     await DoTrackDownload(track.Id.ToString(), quality, settings, cancellation);
                                     if (quality != Bitrate)
                                         logger.Info("Qobuz track {0} ({1}): downloaded at quality {2} instead of requested {3}.", track.Id, track.Title, quality, Bitrate);
-                                    DownloadedSize++;
+                                    Interlocked.Increment(ref _downloadedSize);
                                     downloaded = true;
                                     break;
                                 }
@@ -139,7 +145,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                                 catch (Exception ex)
                                 {
                                     logger.Error("Qobuz track {0} ({1}) failed after {2} attempts: {3}", track.Id, track.Title, maxRetries, ex.Message);
-                                    FailedTracks++;
+                                    Interlocked.Increment(ref _failedTracks);
                                     downloaded = true; // stop trying further qualities
                                     break;
                                 }
@@ -149,7 +155,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                         if (!downloaded)
                         {
                             logger.Warn("Qobuz track {0} ({1}) is not available at any quality and will be skipped.", track.Id, track.Title);
-                            SkippedTracks++;
+                            Interlocked.Increment(ref _skippedTracks);
                         }
                         return;
                     }

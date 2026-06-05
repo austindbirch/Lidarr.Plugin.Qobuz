@@ -17,55 +17,63 @@ namespace NzbDrone.Plugin.Qobuz.API;
 
 public static class Downloader
 {
-    private static readonly byte[] FLAC_MAGIC = "fLaC"u8.ToArray();
-    private static readonly HttpClient _client = new();
-
-    public static async Task<Stream> GetRawTrackStream(this QobuzApiService s, string trackId, AudioQuality bitrate, CancellationToken token = default)
-    {
-        return await s.GetTrackData(trackId, bitrate, token);
-    }
-
-    public static async Task<byte[]> GetRawTrackBytes(this QobuzApiService s, string trackId, AudioQuality bitrate, CancellationToken token = default)
-    {
-        using MemoryStream stream = (MemoryStream)await s.GetRawTrackStream(trackId, bitrate, token);
-        return stream.ToArray();
-    }
+    // No global timeout: large Hi-Res FLAC tracks can take much longer than the default 100s
+    // to download. Each download attempt is instead bounded by a linked token (see below) so a
+    // genuinely stalled connection still fails and is retried, while a slow-but-progressing one
+    // is allowed to finish.
+    private static readonly HttpClient _client = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     public static async Task WriteRawTrackToFile(this QobuzApiService s, string trackId, string trackPath, AudioQuality bitrate, CancellationToken token = default)
     {
-        using FileStream fileStream = File.Open(trackPath, FileMode.Create);
-        var stream = await s.GetTrackData(trackId, bitrate, token);
-        stream.CopyTo(fileStream);
+        // Bound a single attempt so a stalled CDN connection fails (and is retried by the
+        // caller) instead of hanging forever now that the client has no global timeout.
+        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        attemptCts.CancelAfter(TimeSpan.FromMinutes(10));
+        var attemptToken = attemptCts.Token;
 
-        stream.Dispose();
+        using HttpResponseMessage response = await s.GetTrackResponse(trackId, bitrate, attemptToken);
+        long? expectedLength = response.Content.Headers.ContentLength;
+
+        // Stream to a temporary file and only move it into place once it is fully written and
+        // verified, so an interrupted or errored download never leaves a 0-byte or truncated
+        // file at the real destination for Lidarr to import.
+        var tempPath = trackPath + ".part";
+        try
+        {
+            await using (FileStream fileStream = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            await using (Stream httpStream = await response.Content.ReadAsStreamAsync(attemptToken))
+            {
+                await httpStream.CopyToAsync(fileStream, attemptToken);
+                await fileStream.FlushAsync(attemptToken);
+            }
+
+            if (expectedLength.HasValue)
+            {
+                long actualLength = new FileInfo(tempPath).Length;
+                if (actualLength != expectedLength.Value)
+                    throw new IOException($"Incomplete download for track {trackId}: server reported {expectedLength.Value} bytes but only {actualLength} were written.");
+            }
+
+            File.Move(tempPath, trackPath, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(tempPath);
+            throw;
+        }
     }
 
-    public static async Task ApplyMetadataToTrackStream(this QobuzApiService s, string trackId, Stream trackStream, string lyrics = "", CancellationToken token = default)
+    private static void TryDelete(string path)
     {
-        byte[] magicBuffer = new byte[4];
-        await trackStream.ReadAsync(magicBuffer.AsMemory(0, 4), token);
-        string ext = Enumerable.SequenceEqual(magicBuffer, FLAC_MAGIC) ? ".flac" : ".mp3";
-
-        trackStream.Seek(0, SeekOrigin.Begin);
-
-        StreamAbstraction abstraction = new("track" + ext, trackStream);
-        using TagLib.File file = TagLib.File.Create(abstraction);
-        await s.ApplyMetadataToTagLibFile(file, trackId, lyrics, token);
-
-        trackStream.Seek(0, SeekOrigin.Begin);
-    }
-
-    public static async Task<byte[]> ApplyMetadataToTrackBytes(this QobuzApiService s, string trackId, byte[] trackData, string lyrics = "", CancellationToken token = default)
-    {
-        string ext = Enumerable.SequenceEqual(trackData[0..4], FLAC_MAGIC) ? ".flac" : ".mp3";
-
-        FileBytesAbstraction abstraction = new("track" + ext, trackData);
-        using TagLib.File file = TagLib.File.Create(abstraction);
-        await s.ApplyMetadataToTagLibFile(file, trackId, lyrics, token);
-
-        byte[] finalData = abstraction.MemoryStream.ToArray();
-        await abstraction.MemoryStream.DisposeAsync();
-        return finalData;
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // best-effort cleanup; nothing actionable if the temp file can't be removed
+        }
     }
 
     public static async Task ApplyMetadataToFile(this QobuzApiService s, string trackId, string trackPath, string lyrics = "", CancellationToken token = default)
@@ -102,17 +110,21 @@ public static class Downloader
         return await response.Content.ReadAsByteArrayAsync(token);
     }
 
-    private static async Task<Stream> GetTrackData(this QobuzApiService s, string trackId, AudioQuality bitrate, CancellationToken token = default)
+    private static async Task<HttpResponseMessage> GetTrackResponse(this QobuzApiService s, string trackId, AudioQuality bitrate, CancellationToken token = default)
     {
         var urls = (s.GetTrackFileUrl(trackId, ((int)bitrate).ToString())) ?? throw new Exception($"Track ID {trackId} has no available media sources for bitrate {bitrate}.");
         if (urls.Sample ?? false)
             throw new Exception("Qobuz provided a sample. The user probably does not have access to this quality of track.");
 
         HttpRequestMessage message = new(HttpMethod.Get, urls.Url);
-        HttpResponseMessage response = await _client.SendAsync(message, token);
-        Stream stream = await response.Content.ReadAsStreamAsync(token);
+        // ResponseHeadersRead: stream the body to disk instead of buffering the whole (often
+        // 50-150 MB) Hi-Res file in memory, especially with several tracks downloading at once.
+        HttpResponseMessage response = await _client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
+        // Guard against the CDN returning an error (expired/403 URL, 404, 429, 5xx): without this
+        // the error body would be written straight into the .flac file.
+        response.EnsureSuccessStatusCode();
 
-        return stream;
+        return response;
     }
 
     private static async Task ApplyMetadataToTagLibFile(this QobuzApiService s, TagLib.File track, string trackId, string lyrics = "", CancellationToken token = default)
@@ -143,53 +155,4 @@ public static class Downloader
 
         track.Save();
     }
-}
-
-// https://stackoverflow.com/questions/14959320/taglib-sharp-file-from-bytearray-stream#31032997
-internal class FileBytesAbstraction : TagLib.File.IFileAbstraction
-{
-    public FileBytesAbstraction(string name, byte[] bytes)
-    {
-        Name = name;
-
-        MemoryStream stream = new();
-        stream.Write(bytes, 0, bytes.Length);
-
-        MemoryStream = stream;
-    }
-
-    public void CloseStream(Stream stream)
-    {
-        // shared read/write stream so we don't want it to close it when switching AccessMode (see TagLib.NonContainer.File.AccessMode for more context)
-    }
-
-    public string Name { get; private set; }
-
-    public Stream ReadStream { get => MemoryStream; }
-
-    public Stream WriteStream { get => MemoryStream; }
-
-    public MemoryStream MemoryStream { get; private set; }
-}
-
-internal class StreamAbstraction : TagLib.File.IFileAbstraction
-{
-    public StreamAbstraction(string name, Stream stream)
-    {
-        Name = name;
-        Stream = stream;
-    }
-
-    public void CloseStream(Stream stream)
-    {
-        // shared read/write stream so we don't want it to close it when switching AccessMode (see TagLib.NonContainer.File.AccessMode for more context)
-    }
-
-    public string Name { get; private set; }
-
-    public Stream ReadStream { get => Stream; }
-
-    public Stream WriteStream { get => Stream; }
-
-    public Stream Stream { get; private set; }
 }
