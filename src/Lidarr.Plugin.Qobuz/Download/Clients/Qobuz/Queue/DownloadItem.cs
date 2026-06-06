@@ -79,7 +79,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
         private QobuzURL _qobuzUrl;
         private Album _qobuzAlbum;
 
-        public async Task DoDownload(QobuzSettings settings, Logger logger, CancellationToken cancellation = default)
+        public async Task DoDownload(QobuzSettings settings, Logger logger, CompletedDownloadHandler completedHandler, CancellationToken cancellation = default)
         {
             List<Task> tasks = new();
             using SemaphoreSlim semaphore = new(3, 3);
@@ -182,6 +182,11 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
             {
                 if (SkippedTracks > 0)
                     logger.Warn("Qobuz download completed with {0} skipped track(s) not available individually.", SkippedTracks);
+
+                // Post-completion side effects only; failures here never flip the album to Failed.
+                if (!string.IsNullOrWhiteSpace(DownloadFolder))
+                    DownloadFolder = completedHandler.MoveCompletedAlbum(DownloadFolder, _qobuzUrl.Id, Bitrate.ToString(), _tracks.Length, settings);
+
                 Status = DownloadItemStatus.Completed;
             }
         }

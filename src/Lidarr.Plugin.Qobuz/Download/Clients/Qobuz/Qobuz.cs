@@ -70,7 +70,15 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
 
         protected override void Test(List<ValidationFailure> failures)
         {
-            // given the way the code is setup, we don't really need to do anything here
+            if (Settings.CompletedDownloadDirectory.IsNotNullOrWhiteSpace())
+            {
+                var failure = TestFolder(Settings.CompletedDownloadDirectory, nameof(Settings.CompletedDownloadDirectory));
+                if (failure != null)
+                    failures.Add(failure);
+            }
+
+            if (Settings.PostDownloadScript.IsNotNullOrWhiteSpace() && !_diskProvider.FileExists(Settings.PostDownloadScript))
+                failures.Add(new ValidationFailure(nameof(Settings.PostDownloadScript), "Post-download script does not exist"));
         }
     }
 }

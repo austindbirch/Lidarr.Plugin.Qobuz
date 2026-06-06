@@ -6,6 +6,7 @@ using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
+using NzbDrone.Common.Processes;
 using NzbDrone.Core.Download.Clients.Qobuz.Queue;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
@@ -25,10 +26,15 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
         private readonly ICached<DateTime?> _startTimeCache;
         private readonly DownloadTaskQueue _taskQueue;
 
-        public QobuzProxy(ICacheManager cacheManager, Logger logger)
+        public QobuzProxy(ICacheManager cacheManager,
+                          IDiskProvider diskProvider,
+                          IDiskTransferService diskTransferService,
+                          IProcessProvider processProvider,
+                          Logger logger)
         {
             _startTimeCache = cacheManager.GetCache<DateTime?>(GetType(), "startTimes");
-            _taskQueue = new(500, null, logger);
+            var completedHandler = new CompletedDownloadHandler(diskProvider, diskTransferService, processProvider, logger);
+            _taskQueue = new(500, null, logger, completedHandler);
 
             _taskQueue.StartQueueHandler();
         }

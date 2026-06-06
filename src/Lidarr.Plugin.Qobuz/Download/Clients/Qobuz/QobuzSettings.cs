@@ -11,6 +11,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
         public QobuzSettingsValidator()
         {
             RuleFor(x => x.DownloadPath).IsValidPath();
+            RuleFor(x => x.CompletedDownloadDirectory).IsValidPath().When(x => !string.IsNullOrWhiteSpace(x.CompletedDownloadDirectory));
         }
     }
 
@@ -29,6 +30,15 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
 
         [FieldDefinition(5, Label = "Require Complete Album", Type = FieldType.Checkbox, HelpText = "If any track cannot be downloaded, mark the entire album as failed rather than completing with missing tracks. Recommended; lets Lidarr retry or try another release instead of importing a partial album.")]
         public bool RequireCompleteAlbum { get; set; } = true;
+
+        [FieldDefinition(6, Label = "Completed Download Directory", Type = FieldType.Textbox, HelpText = "When set, a finished album is moved to <this folder>/Artist/Album once all files are closed. Leave blank to disable.")]
+        public string CompletedDownloadDirectory { get; set; } = "";
+
+        [FieldDefinition(7, Label = "Post-Download Script", Type = FieldType.Textbox, HelpText = "Optional executable run after a successful move. Receives the final album directory as the first argument and the Qobuz album ID as the second. Leave blank to disable.")]
+        public string PostDownloadScript { get; set; } = "";
+
+        [FieldDefinition(8, Label = "Post-Download Script Timeout", Type = FieldType.Number, Advanced = true, HelpText = "Seconds to wait for the post-download script before killing it. 0 disables the timeout.")]
+        public int PostDownloadScriptTimeout { get; set; } = 300;
 
         public NzbDroneValidationResult Validate()
         {

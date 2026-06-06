@@ -22,8 +22,9 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
 
         private QobuzSettings _settings;
         private readonly Logger _logger;
+        private readonly CompletedDownloadHandler _completedHandler;
 
-        public DownloadTaskQueue(int capacity, QobuzSettings settings, Logger logger)
+        public DownloadTaskQueue(int capacity, QobuzSettings settings, Logger logger, CompletedDownloadHandler completedHandler)
         {
             BoundedChannelOptions options = new(capacity)
             {
@@ -34,6 +35,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
             _cancellationSources = new();
             _settings = settings;
             _logger = logger;
+            _completedHandler = completedHandler;
         }
 
         public void SetSettings(QobuzSettings settings) => _settings = settings;
@@ -77,7 +79,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
 
                 var item = await DequeueAsync(stoppingToken);
                 var token = GetTokenForItem(item);
-                var downloadTask = item.DoDownload(_settings, _logger, token);
+                var downloadTask = item.DoDownload(_settings, _logger, _completedHandler, token);
 
                 lock (_lock)
                     _runningTasks.Add(HandleTask(item, downloadTask));
