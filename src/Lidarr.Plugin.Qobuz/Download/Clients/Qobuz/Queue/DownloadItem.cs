@@ -185,7 +185,13 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
 
                 // Post-completion side effects only; failures here never flip the album to Failed.
                 if (!string.IsNullOrWhiteSpace(DownloadFolder))
-                    DownloadFolder = completedHandler.MoveCompletedAlbum(DownloadFolder, _qobuzUrl.Id, Bitrate.ToString(), _tracks.Length, settings);
+                {
+                    var lidarr = new LidarrInfo(
+                        string.Join(",", RemoteAlbum.Albums.Select(a => a.Id)),
+                        RemoteAlbum.Release?.Guid ?? string.Empty,
+                        RemoteAlbum.Release?.Title ?? string.Empty);
+                    DownloadFolder = completedHandler.MoveCompletedAlbum(DownloadFolder, _qobuzUrl.Id, Bitrate.ToString(), _tracks.Length, lidarr, settings);
+                }
 
                 Status = DownloadItemStatus.Completed;
             }

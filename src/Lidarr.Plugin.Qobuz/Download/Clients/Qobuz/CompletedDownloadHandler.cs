@@ -30,7 +30,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
         // Returns the directory Lidarr should import from: the final destination on a successful
         // move, or the unchanged source directory when the feature is disabled or the move fails
         // (in which case the original files are left in place and the script is not run).
-        public string MoveCompletedAlbum(string sourceAlbumDir, string qobuzAlbumId, string quality, int trackCount, QobuzSettings settings)
+        public string MoveCompletedAlbum(string sourceAlbumDir, string qobuzAlbumId, string quality, int trackCount, LidarrInfo lidarr, QobuzSettings settings)
         {
             if (string.IsNullOrWhiteSpace(settings.CompletedDownloadDirectory))
                 return sourceAlbumDir;
@@ -50,7 +50,7 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
             if (PathsEqual(finalDir, sourceAlbumDir))
             {
                 // Already in place (e.g. completed dir resolves to the download path); run the script only.
-                RunScript(finalDir, qobuzAlbumId, artist, album, quality, trackCount, settings);
+                RunScript(finalDir, qobuzAlbumId, artist, album, quality, trackCount, lidarr, settings);
                 return finalDir;
             }
 
@@ -74,11 +74,11 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
             }
 
             _logger.Info("Qobuz moved completed album to '{0}'.", finalDir);
-            RunScript(finalDir, qobuzAlbumId, artist, album, quality, trackCount, settings);
+            RunScript(finalDir, qobuzAlbumId, artist, album, quality, trackCount, lidarr, settings);
             return finalDir;
         }
 
-        private void RunScript(string albumDir, string qobuzAlbumId, string artist, string album, string quality, int trackCount, QobuzSettings settings)
+        private void RunScript(string albumDir, string qobuzAlbumId, string artist, string album, string quality, int trackCount, LidarrInfo lidarr, QobuzSettings settings)
         {
             if (string.IsNullOrWhiteSpace(settings.PostDownloadScript))
                 return;
@@ -97,6 +97,9 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
                     { "Qobuz_Album", album ?? string.Empty },
                     { "Qobuz_Quality", quality ?? string.Empty },
                     { "Qobuz_TrackCount", trackCount.ToString() },
+                    { "Lidarr_AlbumId", lidarr.AlbumIds ?? string.Empty },
+                    { "Lidarr_ReleaseGuid", lidarr.ReleaseGuid ?? string.Empty },
+                    { "Lidarr_ReleaseTitle", lidarr.ReleaseTitle ?? string.Empty },
                 };
 
                 var stdout = new List<string>();
@@ -166,4 +169,8 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
             return string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
         }
     }
+
+    // Lidarr identifiers handed to the post-download script so it can act on the album
+    // (e.g. unmonitor it). AlbumIds is comma-joined; usually a single id.
+    public record LidarrInfo(string AlbumIds, string ReleaseGuid, string ReleaseTitle);
 }
