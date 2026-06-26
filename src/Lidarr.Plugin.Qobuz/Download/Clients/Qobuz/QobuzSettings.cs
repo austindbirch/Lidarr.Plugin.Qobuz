@@ -40,9 +40,45 @@ namespace NzbDrone.Core.Download.Clients.Qobuz
         [FieldDefinition(8, Label = "Post-Download Script Timeout", Type = FieldType.Number, Advanced = true, HelpText = "Seconds to wait for the post-download script before killing it. 0 disables the timeout.")]
         public int PostDownloadScriptTimeout { get; set; } = 300;
 
+        [FieldDefinition(9, Label = "Artwork Size", Type = FieldType.Select, SelectOptions = typeof(QobuzArtworkSize), HelpText = "Cover-art resolution embedded/saved with downloads. 'Custom' downscales Qobuz's original to the resolution below.")]
+        public int ArtworkSize { get; set; } = (int)QobuzArtworkSize.Large;
+
+        [FieldDefinition(10, Label = "Custom Artwork Resolution", Type = FieldType.Number, Advanced = true, Unit = "px", HelpText = "Used only when Artwork Size is Custom: the original cover is downscaled to fit within this many pixels.")]
+        public int CustomArtworkResolution { get; set; } = 1000;
+
+        [FieldDefinition(11, Label = "Artwork Placement", Type = FieldType.Select, SelectOptions = typeof(QobuzArtworkPlacement), HelpText = "Embed the cover in each track, write a cover.jpg sidecar in the album folder, or both.")]
+        public int ArtworkPlacement { get; set; } = (int)QobuzArtworkPlacement.Embed;
+
         public NzbDroneValidationResult Validate()
         {
             return new NzbDroneValidationResult(Validator.Validate(this));
         }
+    }
+
+    public enum QobuzArtworkSize
+    {
+        [FieldOption(label: "Small (230px)")]
+        Small = 0,
+
+        [FieldOption(label: "Large (600px)")]
+        Large = 1,
+
+        [FieldOption(label: "Original (max)")]
+        Original = 2,
+
+        [FieldOption(label: "Custom (downscale)")]
+        Custom = 3
+    }
+
+    public enum QobuzArtworkPlacement
+    {
+        [FieldOption(label: "Embed in tracks")]
+        Embed = 0,
+
+        [FieldOption(label: "Sidecar (cover.jpg)")]
+        Sidecar = 1,
+
+        [FieldOption(label: "Both")]
+        Both = 2
     }
 }

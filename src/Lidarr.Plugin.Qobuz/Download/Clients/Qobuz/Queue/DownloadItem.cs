@@ -78,9 +78,21 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
         private Track[] _tracks;
         private QobuzURL _qobuzUrl;
         private Album _qobuzAlbum;
+        private byte[] _albumArt;
 
         public async Task DoDownload(QobuzSettings settings, Logger logger, CompletedDownloadHandler completedHandler, CancellationToken cancellation = default)
         {
+            // Resolve the album cover once; every track's embed and the optional sidecar reuse it.
+            try
+            {
+                _albumArt = await QobuzAPI.Instance.Client.GetAlbumArtBytes(_qobuzAlbum, (QobuzArtworkSize)settings.ArtworkSize, settings.CustomArtworkResolution, cancellation);
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Qobuz could not fetch album art for {0}: {1}", Title, ex.Message);
+                _albumArt = null;
+            }
+
             List<Task> tasks = new();
             using SemaphoreSlim semaphore = new(3, 3);
             foreach (var track in _tracks)
@@ -183,6 +195,21 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                 if (SkippedTracks > 0)
                     logger.Warn("Qobuz download completed with {0} skipped track(s) not available individually.", SkippedTracks);
 
+                // Write the cover.jpg sidecar (if configured) before any completed-download move.
+                var placement = (QobuzArtworkPlacement)settings.ArtworkPlacement;
+                if ((placement == QobuzArtworkPlacement.Sidecar || placement == QobuzArtworkPlacement.Both)
+                    && _albumArt != null && !string.IsNullOrWhiteSpace(DownloadFolder))
+                {
+                    try
+                    {
+                        await File.WriteAllBytesAsync(Path.Combine(DownloadFolder, "cover.jpg"), _albumArt, cancellation);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.Warn("Qobuz failed to write cover.jpg for {0}: {1}", Title, ex.Message);
+                    }
+                }
+
                 // Post-completion side effects only; failures here never flip the album to Failed.
                 if (!string.IsNullOrWhiteSpace(DownloadFolder))
                 {
@@ -237,7 +264,8 @@ namespace NzbDrone.Core.Download.Clients.Qobuz.Queue
                 }
             }
 
-            await QobuzAPI.Instance.Client.ApplyMetadataToFile(track, outPath, plainLyrics, token: cancellation);
+            var embedArt = (QobuzArtworkPlacement)settings.ArtworkPlacement != QobuzArtworkPlacement.Sidecar;
+            await QobuzAPI.Instance.Client.ApplyMetadataToFile(track, outPath, _albumArt, embedArt, plainLyrics, token: cancellation);
 
             if (!string.IsNullOrWhiteSpace(syncLyrics))
                 await CreateLrcFile(Path.Combine(outDir, MetadataUtilities.GetFilledTemplate("%volume% - %track% - %title%.%ext%", "lrc", page, _qobuzAlbum)), syncLyrics);

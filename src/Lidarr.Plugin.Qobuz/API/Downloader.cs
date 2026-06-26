@@ -12,6 +12,11 @@ using Newtonsoft.Json;
 using NzbDrone.Core.Parser;
 using QobuzApiSharp.Service;
 using QobuzApiSharp.Models.Content;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Processing;
+using NzbDrone.Core.Download.Clients.Qobuz;
+using ImageSharpImage = SixLabors.ImageSharp.Image;
 
 namespace NzbDrone.Plugin.Qobuz.API;
 
@@ -76,10 +81,10 @@ public static class Downloader
         }
     }
 
-    public static async Task ApplyMetadataToFile(this QobuzApiService s, string trackId, string trackPath, string lyrics = "", CancellationToken token = default)
+    public static async Task ApplyMetadataToFile(this QobuzApiService s, string trackId, string trackPath, byte[] albumArt, bool embedArt, string lyrics = "", CancellationToken token = default)
     {
         using TagLib.File file = TagLib.File.Create(trackPath);
-        await s.ApplyMetadataToTagLibFile(file, trackId, lyrics, token);
+        await s.ApplyMetadataToTagLibFile(file, trackId, albumArt, embedArt, lyrics, token);
     }
 
     public static async Task<(string? plainLyrics, string? syncLyrics)?> FetchLyricsFromLRCLIB(string instance, string trackName, string artistName, string albumName, long duration, CancellationToken token = default)
@@ -97,17 +102,79 @@ public static class Downloader
         return null;
     }
 
-    public static async Task<byte[]> GetAlbumArtBytes(this QobuzApiService s, Album albumData, CancellationToken token = default)
+    // Resolves the album cover for the configured size, or null if none is available. Only
+    // QobuzArtworkSize.Custom downscales (the original is fetched then resized); other sizes are
+    // returned as fetched. Falls back chosen -> large -> small so a missing tier is still safe.
+    public static async Task<byte[]> GetAlbumArtBytes(this QobuzApiService s, Album albumData, QobuzArtworkSize size, int customResolution, CancellationToken token = default)
     {
-        using HttpRequestMessage message = new(HttpMethod.Get, albumData.Image.Large);
-        HttpResponseMessage response = await _client.SendAsync(message, token);
+        var image = albumData?.Image;
+        if (image == null)
+            return null;
 
-        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        string url = size switch
         {
-            throw new Exception($"The art for {albumData.Id} is unavailable.");
-        }
+            QobuzArtworkSize.Small => image.Small,
+            QobuzArtworkSize.Large => image.Large,
+            _ => ToOriginalUrl(image.Large), // Original and Custom both source the full-resolution image
+        };
 
-        return await response.Content.ReadAsByteArrayAsync(token);
+        byte[] bytes = await TryFetchArt(url, token)
+                       ?? await TryFetchArt(image.Large, token)
+                       ?? await TryFetchArt(image.Small, token);
+
+        if (bytes != null && size == QobuzArtworkSize.Custom && customResolution > 0)
+            bytes = ResizeJpegToMax(bytes, customResolution);
+
+        return bytes;
+    }
+
+    // static.qobuz.com/.../{id}_600.jpg -> _org.jpg (Qobuz's original / maximum resolution).
+    private static string ToOriginalUrl(string largeUrl)
+        => string.IsNullOrEmpty(largeUrl) ? largeUrl : Regex.Replace(largeUrl, @"_\d+\.jpg$", "_org.jpg", RegexOptions.IgnoreCase);
+
+    private static async Task<byte[]> TryFetchArt(string url, CancellationToken token)
+    {
+        if (string.IsNullOrEmpty(url))
+            return null;
+
+        try
+        {
+            using HttpRequestMessage message = new(HttpMethod.Get, url);
+            using HttpResponseMessage response = await _client.SendAsync(message, token);
+            if (!response.IsSuccessStatusCode)
+                return null;
+            return await response.Content.ReadAsByteArrayAsync(token);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // Downscale a JPEG so its largest side is at most maxDimension (never upscales). Returns the
+    // input unchanged if it can't be decoded.
+    private static byte[] ResizeJpegToMax(byte[] input, int maxDimension)
+    {
+        try
+        {
+            using ImageSharpImage image = ImageSharpImage.Load(input);
+            if (Math.Max(image.Width, image.Height) > maxDimension)
+            {
+                image.Mutate(x => x.Resize(new ResizeOptions
+                {
+                    Size = new Size(maxDimension, maxDimension),
+                    Mode = ResizeMode.Max,
+                }));
+            }
+
+            using MemoryStream ms = new();
+            image.SaveAsJpeg(ms, new JpegEncoder { Quality = 90 });
+            return ms.ToArray();
+        }
+        catch (Exception)
+        {
+            return input;
+        }
     }
 
     private static async Task<HttpResponseMessage> GetTrackResponse(this QobuzApiService s, string trackId, AudioQuality bitrate, CancellationToken token = default)
@@ -127,13 +194,10 @@ public static class Downloader
         return response;
     }
 
-    private static async Task ApplyMetadataToTagLibFile(this QobuzApiService s, TagLib.File track, string trackId, string lyrics = "", CancellationToken token = default)
+    private static Task ApplyMetadataToTagLibFile(this QobuzApiService s, TagLib.File track, string trackId, byte[] albumArt, bool embedArt, string lyrics = "", CancellationToken token = default)
     {
         var page = s.GetTrack(trackId, true);
         var albumPage = s.GetAlbum(page.Album.Id, true);
-
-        byte[]? albumArt = null;
-        try { albumArt = await s.GetAlbumArtBytes(albumPage, token); } catch (Exception) { }
 
         track.Tag.Title = page.CompleteTitle;
         track.Tag.Album = albumPage.CompleteTitle;
@@ -148,11 +212,13 @@ public static class Downloader
         if (albumPage.Genre != null && !string.IsNullOrEmpty(albumPage.Genre.Name))
             track.Tag.Genres = [ albumPage.Genre.Name ];
 
-        if (albumArt != null)
+        if (embedArt && albumArt != null)
             track.Tag.Pictures = [new TagLib.Picture(new TagLib.ByteVector(albumArt))];
 
         track.Tag.Lyrics = lyrics;
 
         track.Save();
+
+        return Task.CompletedTask;
     }
 }
