@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NLog;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.IndexerSearch.Definitions;
@@ -41,6 +42,18 @@ namespace NzbDrone.Core.Indexers.Qobuz
             return chain;
         }
 
+        // Qobuz stores titles with a typographic apostrophe (U+2019) while
+        // MusicBrainz uses a straight one (U+0027); its search won't match one
+        // against the other, so any apostrophe title returns zero results.
+        // Dropping the apostrophe entirely matches regardless of which glyph is
+        // stored, and Qobuz's keyword search tolerates its absence.
+        private static readonly char[] ApostropheVariants = { '\'', '’', '‘', '`', 'ʼ' };
+
+        private static string NormalizeSearchQuery(string query)
+        {
+            return new string(query.Where(c => Array.IndexOf(ApostropheVariants, c) < 0).ToArray());
+        }
+
         private IEnumerable<IndexerRequest> GetRequests(string searchParameters)
         {
             // make sure we are logged in and have valid credentials
@@ -54,6 +67,8 @@ namespace NzbDrone.Core.Indexers.Qobuz
             {
                 throw new Exception("Qobuz login failed, please check your credentials in the indexer settings.");
             }
+
+            searchParameters = NormalizeSearchQuery(searchParameters);
 
             for (var page = 0; page < MaxPages; page++)
             {
