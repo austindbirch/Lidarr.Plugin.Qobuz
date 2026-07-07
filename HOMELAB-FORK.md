@@ -3,18 +3,24 @@
 Thin tracking fork of https://github.com/DaveBinM/Lidarr.Plugin.Qobuz.
 
 ## Local-only changes (never PR'd)
-- `.github/workflows/build.yml`: `PLUGIN_VERSION` = `10.9.0.<run#>` (our release line).
+- `.github/workflows/build.yml`: `PLUGIN_VERSION` = `10.9.0.<run#>` (our release line)
+  and `draft: false` (auto-publish).
+- `src/Lidarr.Plugin.Qobuz/Plugin.cs`: `Owner`/`GithubUrl` point at our fork so
+  Lidarr tracks us for updates.
 - This file.
 
 ## Patch stack we upstream (PR to DaveBinM)
-- `fix/apostrophe-search`: strip apostrophe glyphs from the Qobuz search query.
+- `feat/search-relaxation-tiers-upstream`: extracts query logic into
+  `QobuzSearchQuery` (with unit tests + isolated `test.yml` CI), adds apostrophe
+  normalization, and adds relaxed + artist-only fallback search tiers. This
+  supersedes the older `fix/apostrophe-search` branch (apostrophe fix is folded in).
 
 ## Sync with upstream (DaveBinM)
     git fetch upstream
     git rebase upstream/main        # our thin stack replays on top
     git push --force-with-lease origin main
-Merged-upstream patches drop out of the stack automatically. CI cuts a draft
-release on push to main; publish it, and Lidarr auto-updates.
+Merged-upstream patches drop out of the stack automatically. CI auto-publishes a
+release on push to main (draft: false); Lidarr auto-updates.
 
 ## Rebuild-on-Lidarr-update
 Plugin references Lidarr.Core >= 3.0.0.4855 (floor), so it keeps loading across
