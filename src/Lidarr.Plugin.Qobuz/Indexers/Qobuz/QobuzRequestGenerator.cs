@@ -26,8 +26,25 @@ namespace NzbDrone.Core.Indexers.Qobuz
         public IndexerPageableRequestChain GetSearchRequests(AlbumSearchCriteria searchCriteria)
         {
             var chain = new IndexerPageableRequestChain();
+            var artist = searchCriteria.ArtistQuery;
+            var album = searchCriteria.AlbumQuery;
 
-            chain.AddTier(GetRequests($"{searchCriteria.ArtistQuery} {searchCriteria.AlbumQuery}"));
+            // Tier 1 — strict: artist + full title. Unchanged from prior behavior.
+            // Highest precision; a title that works today never reaches the tiers below.
+            chain.AddTier(GetRequests($"{artist} {album}"));
+
+            // Tier 2 — relaxed: drop parentheticals + edition/format qualifiers.
+            // Only runs if Tier 1 returned nothing (Lidarr stops at the first
+            // non-empty tier). Skipped when relaxation is a no-op or empties the title.
+            var relaxed = QobuzSearchQuery.RelaxAlbumTitle(album);
+            if (relaxed.Length > 0 && !relaxed.Equals(album, StringComparison.OrdinalIgnoreCase))
+            {
+                chain.AddTier(GetRequests($"{artist} {relaxed}"));
+            }
+
+            // Tier 3 — artist-only: let Lidarr's decision engine match the album
+            // from the artist's catalog. Only runs if Tiers 1 & 2 both returned nothing.
+            chain.AddTier(GetRequests(artist));
 
             return chain;
         }
